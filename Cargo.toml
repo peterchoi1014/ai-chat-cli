@@ -1,0 +1,24 @@
+[package]
+name = "ai-chat-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Repartir for distributed task execution
+repartir = "2.0.0"
+tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "fs"] }
+
+# HTTP client for Ollama API
+reqwest = { version = "0.12", features = ["json"] }
+
+# JSON handling
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# CLI interaction
+colored = "2.1"
+rustyline = "14.0"
+
+# Error handling
+anyhow = "1.0"
+
