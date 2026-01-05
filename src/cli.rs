@@ -58,6 +58,9 @@ impl ChatCLI {
                         continue;
                     }
 
+                    // Add line to readline history
+                    rl.add_history_entry(input)?;
+
                     // Add user message to history
                     self.history.push(Message {
                         role: "user".to_string(),
@@ -100,11 +103,6 @@ impl ChatCLI {
     }
 
     async fn handle_command(&mut self, cmd: &str) -> Result<bool> {
-        if cmd.starts_with("/batch ") {
-            let file = cmd.strip_prefix("/batch ").unwrap().trim();
-            self.process_batch_file(file).await?;
-            return Ok(true);
-        }
         match cmd {
             "/quit" | "/exit" => {
                 println!("{}", "Goodbye!".bright_cyan());
@@ -128,12 +126,52 @@ impl ChatCLI {
                 match self.executor.switch_model(model.to_string()).await {
                     Ok(_) => {
                         println!("{} Switched to model: {}", "✓".bright_green(), model.bright_cyan());
-                        self.history.clear(); // Clear history when switching models
+                        self.history.clear();
                     }
                     Err(e) => {
                         eprintln!("{} {}", "Error:".bright_red(), e);
                     }
                 }
+            }
+            cmd if cmd.starts_with("/save ") => {
+                let filename = cmd.strip_prefix("/save ").unwrap().trim();
+                if let Err(e) = self.save_conversation(filename) {
+                    eprintln!("{} Failed to save: {}", "Error:".bright_red(), e);
+                } else {
+                    println!("{} Conversation saved to {}", "✓".bright_green(), filename.bright_cyan());
+                }
+            }
+            "/save" => {
+                println!("{} Usage: /save <filename>", "Info:".bright_yellow());
+                println!("Example: /save my_chat.json");
+            }
+            cmd if cmd.starts_with("/load ") => {
+                let filename = cmd.strip_prefix("/load ").unwrap().trim();
+                if let Err(e) = self.load_conversation(filename) {
+                    eprintln!("{} Failed to load: {}", "Error:".bright_red(), e);
+                } else {
+                    println!("{} Conversation loaded from {}", "✓".bright_green(), filename.bright_cyan());
+                }
+            }
+            "/load" => {
+                println!("{} Usage: /load <filename>", "Info:".bright_yellow());
+                println!("Example: /load my_chat.json");
+            }
+            cmd if cmd.starts_with("/batch ") => {
+                let filename = cmd.strip_prefix("/batch ").unwrap().trim();
+                if let Err(e) = self.process_batch_file(filename).await {
+                    eprintln!("{} Batch processing failed: {}", "Error:".bright_red(), e);
+                } else {
+                    println!("{} Batch processing complete", "✓".bright_green());
+                }
+            }
+            "/batch" => {
+                println!("{} Usage: /batch <filename>", "Info:".bright_yellow());
+                println!("Example: /batch prompts.txt");
+                println!("\nBatch file format (one prompt per line):");
+                println!("  What is Rust?");
+                println!("  Write hello world in Python");
+                println!("  Explain recursion");
             }
             _ => {
                 println!("{} {}", "Unknown command:".bright_red(), cmd);
