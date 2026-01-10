@@ -1,17 +1,22 @@
 mod cli;
 mod executor;
 mod ollama;
+mod mcp_config;
+mod mcp_client;
+mod mcp_manager;
+mod builtin_tools;
 
 use anyhow::{Context, Result};
 use colored::*;
 use executor::AIExecutor;
 use cli::ChatCLI;
+use mcp_manager::McpManager;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Configuration
-    let model = "llama3.2:1b"; // Change this to your preferred model
-    let cpu_workers = 6; // Adjust based on your Mac's CPU cores
+    let model = "llama3.2:1b";
+    let cpu_workers = 4;
 
     println!("{}", "Initializing AI Chat CLI...".bright_cyan());
 
@@ -43,16 +48,36 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Create executor with Repartir
+    // Initialize MCP
+    let mcp_manager = match McpManager::new().await {
+        Ok(manager) => {
+            if manager.has_tools() {
+                let tool_count = manager.list_tools().len();
+                println!("{} Loaded {} MCP tool(s)", 
+                    "✓".bright_green(), tool_count);
+                Some(manager)
+            } else {
+                println!("{} No MCP tools configured (create ~/.ai-chat-cli/mcp.json)", 
+                    "ℹ".bright_blue());
+                None
+            }
+        }
+        Err(e) => {
+            eprintln!("{} Failed to initialize MCP: {}", 
+                "Warning:".bright_yellow(), e);
+            None
+        }
+    };
+
+    // Create executor
     let executor = AIExecutor::new(model.to_string(), cpu_workers)
         .await
         .context("Failed to create AI executor")?;
 
-    println!("{} Repartir pool initialized with {} workers", 
-        "✓".bright_green(), cpu_workers);
+    println!("{} AI executor ready", "✓".bright_green());
 
     // Create and run CLI
-    let mut cli = ChatCLI::new(executor);
+    let mut cli = ChatCLI::new(executor, mcp_manager);
     cli.run().await?;
 
     Ok(())

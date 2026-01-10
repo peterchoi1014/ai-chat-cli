@@ -5,10 +5,13 @@ edition = "2024"
 
 [dependencies]
 # Repartir for distributed task execution
-repartir = "2.0.0"
-tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "fs"] }
+#repartir = "2.0.0"
+#tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "fs"] }
 
-# HTTP client for Ollama API
+# For async timeout
+tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "process", "io-util", "time"] }
+
+# HTTP client for Ollama API and MCP
 reqwest = { version = "0.12", features = ["json"] }
 
 # JSON handling
@@ -21,4 +24,10 @@ rustyline = "14.0"
 
 # Error handling
 anyhow = "1.0"
+
+# For home directory resolution
+dirs = "5.0"
+
+# UUID for request IDs
+uuid = { version = "1.0", features = ["v4", "serde"] }
 

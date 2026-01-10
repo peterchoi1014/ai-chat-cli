@@ -3,6 +3,7 @@ use colored::*;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use crate::executor::AIExecutor;
+use crate::mcp_manager::McpManager;
 use crate::ollama::Message;
 use std::fs;
 use serde_json;
@@ -10,14 +11,35 @@ use serde_json;
 pub struct ChatCLI {
     executor: AIExecutor,
     history: Vec<Message>,
+    mcp_manager: Option<McpManager>,
 }
 
 impl ChatCLI {
-    pub fn new(executor: AIExecutor) -> Self {
-        Self {
+    pub fn new(executor: AIExecutor, mcp_manager: Option<McpManager>) -> Self {
+        let mut cli = Self {
             executor,
             history: Vec::new(),
+            mcp_manager,
+        };
+    
+        // Auto-inject MCP tools into context
+        if let Some(mcp) = &cli.mcp_manager {
+            if mcp.has_tools() {
+                let tools = mcp.list_tools();
+                let mut msg = String::from("SYSTEM: You have access to these MCP tools:\n\n");
+                for t in tools {
+                    msg.push_str(&format!("- {}: {}\n", t.name, t.description));
+                }
+                msg.push_str("\nWhen relevant, tell users they can execute these with /mcp-call <tool> <args>");
+            
+                cli.history.push(Message {
+                    role: "system".to_string(),
+                    content: msg,
+                });
+            }
         }
+    
+        cli
     }
 
     pub fn save_conversation(&self, filename: &str) -> Result<()> {
@@ -121,6 +143,40 @@ impl ChatCLI {
             "/model" => {
                 println!("Current model: {}", self.executor.get_model().bright_cyan());
             }
+            "/mcp-tools" => {
+                self.show_mcp_tools();
+            }
+            cmd if cmd.starts_with("/mcp-call ") => {
+                let rest = cmd.strip_prefix("/mcp-call ").unwrap().trim();
+                let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+                
+                if parts.len() < 2 {
+                    println!("{} Usage: /mcp-call <tool_name> <json_args>", 
+                        "Info:".bright_yellow());
+                    println!("Example: /mcp-call add {{\"a\": 5, \"b\": 3}}");
+                } else {
+                    let tool_name = parts[0];
+                    let args_str = parts[1];
+                    
+                    match serde_json::from_str(args_str) {
+                        Ok(args) => {
+                            if let Err(e) = self.call_mcp_tool(tool_name, args).await {
+                                eprintln!("{} {}", "Error:".bright_red(), e);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("{} Invalid JSON: {}", "Error:".bright_red(), e);
+                        }
+                    }
+                }
+            }
+            "/mcp-reload" => {
+                if let Err(e) = self.reload_mcp().await {
+                    eprintln!("{} Failed to reload MCP: {}", "Error:".bright_red(), e);
+                } else {
+                    println!("{} MCP configuration reloaded", "✓".bright_green());
+                }
+            }
             cmd if cmd.starts_with("/model ") => {
                 let model = cmd.strip_prefix("/model ").unwrap().trim();
                 match self.executor.switch_model(model.to_string()).await {
@@ -201,6 +257,90 @@ impl ChatCLI {
         Ok(())
     }
 
+    fn show_mcp_tools(&self) {
+        if let Some(mcp) = &self.mcp_manager {
+            let tools = mcp.list_tools();
+            if tools.is_empty() {
+                println!("{}", "No MCP tools available.".yellow());
+                return;
+            }
+
+            println!("\n{}", "Available MCP Tools:".bright_yellow().bold());
+            println!("{}", "=".repeat(60).bright_black());
+        
+            // Group by built-in vs external
+            let mut builtin = Vec::new();
+            let mut external = Vec::new();
+        
+            for (tool_name, (server_name, tool)) in mcp.get_tools_with_server() {
+                if server_name == "builtin" {
+                    builtin.push(tool);
+                } else {
+                    external.push((server_name, tool));
+                }
+            }
+        
+            if !builtin.is_empty() {
+                println!("\n{}", "Built-in Tools:".bright_blue().bold());
+                for tool in builtin {
+                    println!("\n  {} {}", "●".bright_green(), tool.name.bright_cyan());
+                    println!("    {}", tool.description);
+                }
+            }
+        
+            if !external.is_empty() {
+                println!("\n{}", "External MCP Servers:".bright_blue().bold());
+                for (server, tool) in external {
+                    println!("\n  {} {} (from {})", 
+                        "●".bright_green(), 
+                        tool.name.bright_cyan(),
+                        server.bright_magenta());
+                    println!("    {}", tool.description);
+                }
+            }
+        
+            println!("\n{}\n", "=".repeat(60).bright_black());
+            println!("Use {} <tool> <args> to execute", "/mcp-call".bright_cyan());
+        }
+    }
+
+    async fn call_mcp_tool(&mut self, tool_name: &str, arguments: serde_json::Value) -> Result<()> {
+        if let Some(mcp) = &mut self.mcp_manager {
+            println!("{} Calling tool '{}'...", "⚙".bright_blue(), tool_name);
+            
+            let result = mcp.call_tool(tool_name, arguments).await?;
+            
+            for content in &result.content {
+                if content.content_type == "text" {
+                    println!("{} {}", "✓".bright_green(), content.text);
+                }
+            }
+        } else {
+            anyhow::bail!("MCP not initialized");
+        }
+        
+        Ok(())
+    }
+
+    async fn reload_mcp(&mut self) -> Result<()> {
+        // Shutdown existing MCP connections
+        if let Some(mcp) = &mut self.mcp_manager {
+            mcp.shutdown().await;
+        }
+        
+        // Reload configuration and reconnect
+        self.mcp_manager = match McpManager::new().await {
+            Ok(manager) => Some(manager),
+            Err(e) => {
+                eprintln!("{} {}", "Warning:".bright_yellow(), e);
+                None
+            }
+        };
+        
+        Ok(())
+    }
+    
+
     fn print_welcome(&self) {
         println!("\n{}", "=".repeat(60).bright_cyan());
         println!("{}", "  AI Chat CLI - Powered by Repartir".bright_cyan().bold());
@@ -209,6 +349,9 @@ impl ChatCLI {
         println!("  {} - Show this help message", "/help".bright_cyan());
         println!("  {} - Clear conversation history", "/clear".bright_cyan());
         println!("  {} - Show conversation history", "/history".bright_cyan());
+        println!("  {} - List available MCP tools", "/mcp-tools".bright_cyan());
+        println!("  {} <t> <a> - Call MCP tool", "/mcp-call".bright_cyan());
+        println!("  {} - Reload MCP configuration", "/mcp-reload".bright_cyan());
         println!("  {} - Show current model", "/model".bright_cyan());
         println!("  {} <name> - Switch to different model", "/model".bright_cyan());
         println!("  {} - Exit the chat", "/quit".bright_cyan());
@@ -220,6 +363,9 @@ impl ChatCLI {
         println!("  {} - Show this help message", "/help".bright_cyan());
         println!("  {} - Clear conversation history", "/clear".bright_cyan());
         println!("  {} - Show conversation history", "/history".bright_cyan());
+        println!("  {} - List available MCP tools", "/mcp-tools".bright_cyan());
+        println!("  {} <t> <a> - Call MCP tool", "/mcp-call".bright_cyan());
+        println!("  {} - Reload MCP configuration", "/mcp-reload".bright_cyan());
         println!("  {} - Show current model", "/model".bright_cyan());
         println!("  {} <name> - Switch to different model", "/model".bright_cyan());
         println!("  {} - Exit the chat\n", "/quit".bright_cyan());
@@ -244,5 +390,18 @@ impl ChatCLI {
             println!("{} [{}]: {}", role, i + 1, msg.content);
         }
         println!("{}\n", "-".repeat(60).bright_black());
+    }
+}
+
+// Update Drop implementation
+impl Drop for ChatCLI {
+    fn drop(&mut self) {
+        if let Some(mcp) = &mut self.mcp_manager {
+            // Spawn blocking task to shutdown MCP
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                mcp.shutdown().await;
+            });
+        }
     }
 }
