@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use colored::*;
 use std::collections::HashMap;
 
-use crate::builtin_tools::{BuiltinToolRegistry, ToolResult as BuiltinToolResult};
+use crate::builtin_tools::BuiltinToolRegistry;
 use crate::mcp_client::{McpClient, Tool, ToolCallResult};
 use crate::mcp_config::{McpConfig, McpServerConfig};
 

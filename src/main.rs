@@ -16,7 +16,7 @@ use mcp_manager::McpManager;
 async fn main() -> Result<()> {
     // Configuration
     let model = "llama3.2:1b";
-    let cpu_workers = 4;
+    let cpu_workers = 6;
 
     println!("{}", "Initializing AI Chat CLI...".bright_cyan());
 

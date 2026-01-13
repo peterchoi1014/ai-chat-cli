@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -417,7 +417,7 @@ impl BuiltinToolRegistry {
         let base_path = args["base_path"].as_str().unwrap_or(".");
 
         // Use glob crate for pattern matching
-        let glob_pattern = format!("{}/{}", base_path, pattern);
+        let _glob_pattern = format!("{}/{}", base_path, pattern);
         
         // For now, use basic shell globbing via bash
         let command = format!("find {} -name '{}'", base_path, pattern.replace("**", "*"));

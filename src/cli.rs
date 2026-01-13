@@ -272,7 +272,7 @@ impl ChatCLI {
             let mut builtin = Vec::new();
             let mut external = Vec::new();
         
-            for (tool_name, (server_name, tool)) in mcp.get_tools_with_server() {
+            for (_tool_name, (server_name, tool)) in mcp.get_tools_with_server() {
                 if server_name == "builtin" {
                     builtin.push(tool);
                 } else {
