@@ -249,8 +249,7 @@ fn maybe_write_stub_config(path: &std::path::Path) -> StubWriteResult {
         .unwrap_or_else(|| crate::DEFAULT_MODEL.to_string());
     let stub = format!(
         "{{\n  \"default_model\": {}\n}}\n",
-        serde_json::to_string(&model)
-            .unwrap_or_else(|_| format!("{:?}", crate::DEFAULT_MODEL))
+        serde_json::to_string(&model).unwrap_or_else(|_| format!("{:?}", crate::DEFAULT_MODEL))
     );
     match std::fs::write(path, stub) {
         Ok(()) => StubWriteResult::Wrote,

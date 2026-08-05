@@ -87,6 +87,31 @@ stable; CI consumes it as an artifact.
 Keep tasks tiny and reproducible: no network, no large dependencies,
 ideally < 30s to build and verify.
 
+## How the harness sandboxes a run
+
+Per task, `run_task` copies `repo/` into a throwaway workdir and gives the
+spawned agent its own temporary `HOME`, so a run never touches the
+developer's real dotfiles. Two consequences are easy to get wrong, and both
+silently pin the score at 0% rather than erroring:
+
+1. **The workdir must be pre-trusted.** Cubi refuses writes outside a trusted
+   root, and headless `-p` mode *auto-denies* instead of prompting. Because
+   the isolated `HOME` starts with an empty trust store, the harness seeds
+   `$HOME/.cubi/trusted_dirs.json` with the workdir
+   (`permissions::seed_trust_file`, shared with `cubi swebench`). Without it
+   every `edit_file`/`write_file` call comes back `[tool denied]`.
+2. **Paths handed across the cwd boundary must be absolute.** `verify.sh` and
+   the `--events` log are resolved from the *harness* cwd but used from the
+   *workdir*, so `tasks_root` and the output dir are canonicalized up front.
+   A relative `verify.sh` path makes `sh` exit 2 without running the tests.
+
+`tests/bench.rs` guards both with an end-to-end pass/fail pair that scripts
+the `Fake` LLM backend (`CUBI_FAKE_LLM` + `CUBI_FAKE_LLM_TOOL_CALL`), so they
+run in ordinary CI with **no local model** — only `cargo`.
+
+> **Historical note.** Nightly `summary.json` artifacts produced before these
+> fixes report 0% for every model and are not a usable baseline.
+
 ## CI integration
 
 `.github/workflows/bench.yml` runs the quick suite nightly (and on
@@ -95,6 +120,16 @@ manual dispatch) using `qwen3:8b` via Ollama and uploads the
 build on score regression today; tightening that threshold comes later
 once we have several runs of baseline data.
 
-Regular CI (`.github/workflows/ci.yml`) does *not* run `cubi bench` —
-it has no local model. The harness itself is covered by unit tests
-(`src/bench.rs` `#[cfg(test)]`) and `tests/bench.rs`.
+Regular CI (`.github/workflows/ci.yml`) does *not* run `cubi bench`
+against a live model — it has no Ollama. The harness itself is covered by
+unit tests (`src/bench.rs` `#[cfg(test)]`) and the model-free end-to-end
+tests in `tests/bench.rs`.
+
+## Interpreting a score
+
+The quick suite is **6 binary tasks**, so its resolution is coarse: a
+one-task swing is ±16.7 points, and at n=6 the 95% confidence interval on a
+5/6 result spans roughly 42–100%. That is wide enough that a single run
+cannot separate two similar models. To compare models (e.g. a default-model
+bump), run each several times and compare distributions, or grow the suite —
+don't read a single `score_pct` as a verdict.

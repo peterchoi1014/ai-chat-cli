@@ -956,24 +956,10 @@ fn sanitize(id: &str) -> String {
 
 /// Seed a `trusted_dirs.json` in the isolated HOME so the headless Cubi
 /// run may edit files in `repo_dir` without an interactive trust prompt.
-/// Cubi refuses writes outside a trusted root; the path is canonicalized to
-/// match Cubi's own trust comparison (which canonicalizes before checking).
+/// Shares the implementation with `cubi bench`, which needs the identical
+/// treatment — see [`crate::permissions::seed_trust_file`].
 fn seed_trust(home: &Path, repo_dir: &Path) -> Result<()> {
-    let canonical = std::fs::canonicalize(repo_dir)
-        .with_context(|| format!("canonicalize {}", repo_dir.display()))?;
-    let cubi_dir = home.join(".cubi");
-    std::fs::create_dir_all(&cubi_dir).with_context(|| format!("create {}", cubi_dir.display()))?;
-    let trust = serde_json::json!({
-        "trusted_roots": [canonical],
-        "allowed_tools": [],
-        "denied_tools": [],
-    });
-    std::fs::write(
-        cubi_dir.join("trusted_dirs.json"),
-        serde_json::to_string_pretty(&trust)?,
-    )
-    .context("write trusted_dirs.json")?;
-    Ok(())
+    crate::permissions::seed_trust_file(home, repo_dir)
 }
 
 #[cfg(test)]

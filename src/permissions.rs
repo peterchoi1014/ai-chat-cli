@@ -46,6 +46,36 @@ struct TrustFile {
     pub denied_tools: BTreeSet<String>,
 }
 
+/// Seeds a `trusted_dirs.json` under `home` so a headless child process may
+/// edit files inside `dir` without an interactive trust prompt.
+///
+/// The benchmark harnesses (`cubi bench`, `cubi swebench`) hand the spawned
+/// agent an isolated `HOME` so the run never touches the developer's real
+/// dotfiles. That also means the child starts with an *empty* trust store,
+/// and headless mode auto-denies rather than prompting — so without seeding,
+/// every write tool call is refused and the harness scores 0% for every
+/// model. Callers must therefore pre-trust the throwaway workdir.
+///
+/// `dir` is canonicalized to match [`Permissions::contains`], which
+/// canonicalizes before comparing. Written through [`TrustFile`] so the
+/// on-disk shape cannot drift from what [`Permissions::load`] expects.
+pub fn seed_trust_file(home: &Path, dir: &Path) -> Result<()> {
+    let canonical =
+        fs::canonicalize(dir).with_context(|| format!("canonicalize {}", dir.display()))?;
+    let cubi_dir = home.join(".cubi");
+    fs::create_dir_all(&cubi_dir).with_context(|| format!("create {}", cubi_dir.display()))?;
+    let trust = TrustFile {
+        trusted_roots: BTreeSet::from([canonical]),
+        ..TrustFile::default()
+    };
+    fs::write(
+        cubi_dir.join("trusted_dirs.json"),
+        serde_json::to_string_pretty(&trust)?,
+    )
+    .context("write trusted_dirs.json")?;
+    Ok(())
+}
+
 /// In-memory permissions snapshot. Cheap to clone; persists changes
 /// eagerly so a crash never loses an approval the user just granted.
 #[derive(Debug, Default, Clone)]
