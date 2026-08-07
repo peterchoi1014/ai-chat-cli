@@ -349,6 +349,14 @@ pub async fn run(args: BenchArgs) -> Result<i32> {
         .clone()
         .unwrap_or_else(|| PathBuf::from("bench/tasks"));
     let all = discover_tasks(&tasks_root)?;
+    // Resolve to an absolute path. `run_task` runs `verify.sh` with the
+    // agent's throwaway workdir as cwd, so the default *relative*
+    // `bench/tasks` would not resolve there: `sh` exits 2 ("can't open") and
+    // every task scores `fail` no matter how capable the model is. The
+    // existence check inside `discover_tasks` above still reports the nicer
+    // error when the root is simply missing.
+    let tasks_root = std::fs::canonicalize(&tasks_root)
+        .with_context(|| format!("canonicalize bench tasks root {}", tasks_root.display()))?;
     let tasks = select_tasks(all, args.suite, args.task.as_deref())?;
     if tasks.is_empty() {
         bail!(
@@ -361,6 +369,13 @@ pub async fn run(args: BenchArgs) -> Result<i32> {
     let output_dir = args.output.clone().unwrap_or_else(default_output_dir);
     std::fs::create_dir_all(&output_dir)
         .with_context(|| format!("create bench output dir {}", output_dir.display()))?;
+    // Absolute for the same reason as `tasks_root`: the per-task events path
+    // is handed to the spawned agent via `--events`, and the agent runs with
+    // the throwaway workdir as cwd. Left relative, each run's event log is
+    // written *inside* the workdir — polluting what `verify.sh` sees and
+    // vanishing when the workdir is cleaned up.
+    let output_dir = std::fs::canonicalize(&output_dir)
+        .with_context(|| format!("canonicalize bench output dir {}", output_dir.display()))?;
 
     let started_at = now_iso();
     let wall_start = Instant::now();
@@ -496,6 +511,27 @@ async fn run_one_task(
         .prefix(&format!("cubi-bench-home-{}-", task.id))
         .tempdir()
         .context("create bench home tempdir")?;
+
+    // Cubi refuses writes outside a trusted root, and headless mode denies
+    // instead of prompting — so without pre-trusting the throwaway workdir
+    // every `edit_file`/`write_file` call comes back "[tool denied]" and the
+    // suite scores 0% no matter how capable the model is. Seed the isolated
+    // HOME's trust store the same way `cubi swebench` does.
+    if let Err(e) = crate::permissions::seed_trust_file(home_dir.path(), workdir.path()) {
+        return Ok(TaskResult {
+            task_id: task.id.clone(),
+            model: model.to_string(),
+            status: TaskStatus::Error,
+            elapsed_seconds: 0.0,
+            steps_used: None,
+            verify_exit_code: None,
+            cubi_exit_code: None,
+            tokens_in: None,
+            tokens_out: None,
+            events_path: None,
+            error: Some(format!("seed trust: {e:#}")),
+        });
+    }
 
     let events_path = output_dir.join(format!("{}.events.jsonl", task.id));
     let _step_cap = step_cap_override.unwrap_or(task.step_cap); // reserved: cubi has no public --max-steps flag yet
