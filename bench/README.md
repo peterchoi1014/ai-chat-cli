@@ -65,7 +65,7 @@ python3 -m pip install --user pytest
 cubi bench
 
 # Explicit model and JSON summary on stdout:
-cubi bench --suite quick --model qwen3:8b --json
+cubi bench --suite quick --model qwen3.5:9b --json
 
 # One task at a time, keeping the agent's working copy for inspection:
 cubi bench --task rust-fizzbuzz --keep-workdir

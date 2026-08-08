@@ -2195,10 +2195,7 @@ fn print_bench_help() {
          --tasks-root <dir>        Override the tasks directory\n  \
                                   (default: bench/tasks/).\n  \
          --step-cap <n>            Override the per-task step cap.\n  \
-         --time-cap-multiplier <n> Scale every task's time_cap_seconds by <n>\n  \
-                                   (e.g. 3). Task caps assume GPU-class\n  \
-                                   inference; CPU-only hosts need headroom or\n  \
-                                   every task just times out.\n  \
+         --time-cap-multiplier <n> Scale every task's time cap by <n> (slow CPU hosts).\n  \
          --keep-workdir            Don't clean up the agent's tempdir.\n  \
          --json                    Print summary as JSON to stdout.\n  \
          -h, --help                Print this help and exit.\n\n\

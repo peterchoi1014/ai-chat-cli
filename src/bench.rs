@@ -8,7 +8,7 @@
 //!
 //! SWE-bench-Lite integration is explicitly out of scope; this module
 //! exists so the Cubi project has a reproducible, network-free
-//! regression metric that runs nightly against `qwen3:8b`.
+//! regression metric that runs nightly against `qwen3.5:4b`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -103,10 +103,12 @@ pub struct BenchArgs {
     pub time_cap_multiplier: Option<f64>,
 }
 
-/// Applies `multiplier` to a task's configured cap, rounding up so a
-/// fractional scale never shortens a budget. Falls back to the unscaled cap
-/// when the multiplier is absent or not a usable positive number, and never
-/// returns 0 (a zero cap would time every task out instantly).
+/// Applies `multiplier` to a task's configured cap, rounding up so the result
+/// is never *below* the requested scale (a multiplier < 1 does shorten the cap
+/// — that is the caller's intent — but rounding never shortens it further).
+/// Falls back to the unscaled cap when the multiplier is absent or not a
+/// usable positive number, and never returns 0 (a zero cap would time every
+/// task out instantly).
 fn scaled_time_cap(base_seconds: u64, multiplier: Option<f64>) -> u64 {
     let Some(m) = multiplier.filter(|m| m.is_finite() && *m > 0.0) else {
         return base_seconds;
@@ -834,9 +836,11 @@ mod tests {
     fn scaled_time_cap_applies_multiplier() {
         assert_eq!(scaled_time_cap(120, Some(3.0)), 360);
         assert_eq!(scaled_time_cap(180, Some(3.0)), 540);
-        // Rounds up so a fractional scale never shortens the budget.
+        // Rounds up, so the cap is never below the requested scale.
         assert_eq!(scaled_time_cap(120, Some(2.5)), 300);
         assert_eq!(scaled_time_cap(121, Some(1.5)), 182);
+        // A multiplier below 1 deliberately shortens the cap.
+        assert_eq!(scaled_time_cap(120, Some(0.5)), 60);
     }
 
     #[test]

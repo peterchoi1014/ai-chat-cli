@@ -101,11 +101,15 @@ jobs:
         # than requiring an artifact download to notice a flat-zero night.
         run: |
           python3 <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import json, pathlib
+          import json, pathlib, sys
           p = pathlib.Path("bench/results/ci/summary.json")
           if not p.exists():
-              print("### cubi bench: no summary.json produced (the run did not complete)")
-              raise SystemExit(0)
+              # A missing summary means the harness itself did not complete —
+              # categorically different from "the model scored badly", and the
+              # one case this job should go red for. Scoring 0% stays green
+              # (that is the metric); producing no metric at all does not.
+              print("### cubi bench: no summary.json produced — the run did not complete")
+              sys.exit(1)
           d = json.loads(p.read_text())
           print(f"### cubi bench: {d['n_pass']}/{d['n_tasks']} passed ({d['score_pct']:.1f}%)")
           print()
@@ -120,6 +124,9 @@ jobs:
           PY
 
       - name: Upload bench results
+        # Always upload, even when the summarizer step above fails: a run that
+        # went wrong is exactly when the raw events/summary files matter most.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bench-summary-${{ github.run_id }}
