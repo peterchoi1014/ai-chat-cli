@@ -2,9 +2,25 @@ name: bench
 
 # Nightly + manual regression run for the `cubi bench` quick suite.
 #
-# Spins up Ollama, pulls qwen3:8b, and runs `cubi bench --suite quick
-# --model qwen3:8b --json`. The summary.json is uploaded as an
-# artifact so we can chart pass rate over time.
+# Spins up Ollama and runs the quick suite, uploading summary.json as an
+# artifact and printing the score to the job summary so pass rate can be
+# charted over time.
+#
+# Two settings exist because this runs on a CPU-only GitHub-hosted runner
+# (4 vCPU, no GPU), which is far slower than the GPU-class inference the
+# task definitions assume:
+#
+#   * `qwen3.5:4b` rather than the shipped default `qwen3.5:9b` — the 4B is
+#     tool-capable but materially faster on CPU. The point of this job is to
+#     detect agent-loop regressions, which needs runs that finish; it is not
+#     a leaderboard for the default model.
+#   * `--time-cap-multiplier 3` — scales each task's cap (120s -> 360s,
+#     180s -> 540s). Without headroom every task merely hits the cap: before
+#     this was tuned, the bench step took *exactly* the sum of the caps every
+#     night and scored 0% for months.
+#
+# If 4B turns out too weak at tool calling to score, the knob to try next is
+# a larger model with a larger multiplier (watch `timeout-minutes`).
 #
 # This workflow deliberately does NOT fail the build on a score
 # regression — once we have several stable baseline runs we can
@@ -22,7 +38,9 @@ jobs:
   bench:
     name: quick suite
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Worst case (every task hitting the scaled cap) is 5*360 + 540 = 39min
+    # of bench plus ~4min of setup; 90 leaves headroom without hanging all day.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -55,7 +73,7 @@ jobs:
           ollama --version
 
       - name: Pull model
-        run: ollama pull qwen3:8b
+        run: ollama pull qwen3.5:4b
 
       - name: Install Python test deps
         # Some bench tasks (py-*) call `python3 -m pytest` in their
@@ -69,13 +87,46 @@ jobs:
           mkdir -p bench/results/ci
           ./target/release/cubi bench \
             --suite quick \
-            --model qwen3:8b \
+            --model qwen3.5:4b \
+            --time-cap-multiplier 3 \
             --json \
             --output bench/results/ci \
             | tee bench/results/ci/stdout.json
         continue-on-error: true
 
+      - name: Summarize score
+        if: always()
+        # The bench step is continue-on-error, so a 0% run still reports a
+        # green check. Surface the actual numbers in the job summary rather
+        # than requiring an artifact download to notice a flat-zero night.
+        run: |
+          python3 <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib, sys
+          p = pathlib.Path("bench/results/ci/summary.json")
+          if not p.exists():
+              # A missing summary means the harness itself did not complete —
+              # categorically different from "the model scored badly", and the
+              # one case this job should go red for. Scoring 0% stays green
+              # (that is the metric); producing no metric at all does not.
+              print("### cubi bench: no summary.json produced — the run did not complete")
+              sys.exit(1)
+          d = json.loads(p.read_text())
+          print(f"### cubi bench: {d['n_pass']}/{d['n_tasks']} passed ({d['score_pct']:.1f}%)")
+          print()
+          print(f"model `{d['model']}` · suite `{d['suite']}` · "
+                f"{d['wall_time_seconds']:.0f}s wall")
+          print()
+          print("| task | status | verify rc | elapsed (s) |")
+          print("| --- | --- | --- | --- |")
+          for t in d["per_task"]:
+              print(f"| {t['task_id']} | {t['status']} | "
+                    f"{t.get('verify_exit_code')} | {t['elapsed_seconds']:.1f} |")
+          PY
+
       - name: Upload bench results
+        # Always upload, even when the summarizer step above fails: a run that
+        # went wrong is exactly when the raw events/summary files matter most.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bench-summary-${{ github.run_id }}

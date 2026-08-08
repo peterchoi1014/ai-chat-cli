@@ -65,11 +65,28 @@ python3 -m pip install --user pytest
 cubi bench
 
 # Explicit model and JSON summary on stdout:
-cubi bench --suite quick --model qwen3:8b --json
+cubi bench --suite quick --model qwen3.5:9b --json
 
 # One task at a time, keeping the agent's working copy for inspection:
 cubi bench --task rust-fizzbuzz --keep-workdir
+
+# Triple every task's time cap — for CPU-only hosts, where the caps below
+# are far too tight and every task would otherwise just time out:
+cubi bench --time-cap-multiplier 3
 ```
+
+### Time caps and slow hosts
+
+Each task's `time_cap_seconds` assumes GPU-class inference. On a CPU-only
+host an 8B-class model needs several times longer for the same work, and a
+task that runs out of clock is recorded as `timeout` — indistinguishable at a
+glance from a model that simply failed. `--time-cap-multiplier <n>` scales
+every cap by `n`, preserving the relative per-task budgets rather than
+flattening them to a single number. The nightly CI job uses `3`.
+
+If a run comes back all-`timeout` with `elapsed_seconds` sitting exactly on
+the cap, that is the signal to raise the multiplier (or use a smaller model),
+not evidence about the model's ability.
 
 Results land in `bench/results/<unix-ts>/`. The `summary.json` schema is
 stable; CI consumes it as an artifact.
@@ -115,8 +132,11 @@ run in ordinary CI with **no local model** — only `cargo`.
 ## CI integration
 
 `.github/workflows/bench.yml` runs the quick suite nightly (and on
-manual dispatch) using `qwen3:8b` via Ollama and uploads the
-`summary.json` as a workflow artifact. The job does **not** fail the
+manual dispatch) using `qwen3.5:4b` via Ollama with
+`--time-cap-multiplier 3`, prints the score to the job summary, and uploads
+`summary.json` as a workflow artifact. It runs a smaller model than the
+shipped default because the runner is CPU-only — see the header comment in
+that workflow for the reasoning. The job does **not** fail the
 build on score regression today; tightening that threshold comes later
 once we have several runs of baseline data.
 

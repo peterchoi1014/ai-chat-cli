@@ -797,6 +797,18 @@ async fn main() -> Result<()> {
                             };
                             bench_args.step_cap = Some(n);
                         }
+                        "--time-cap-multiplier" => {
+                            j += 1;
+                            let Some(v) = argv.get(j).and_then(|a| a.to_str()) else {
+                                eprintln!("cubi: bench --time-cap-multiplier requires a number.");
+                                std::process::exit(2);
+                            };
+                            bench_args.time_cap_multiplier = Some(parse_time_cap_multiplier(v));
+                        }
+                        _ if arg.starts_with("--time-cap-multiplier=") => {
+                            let v = arg.trim_start_matches("--time-cap-multiplier=");
+                            bench_args.time_cap_multiplier = Some(parse_time_cap_multiplier(v));
+                        }
                         "--keep-workdir" => bench_args.keep_workdir = true,
                         "--json" => bench_args.json = true,
                         "--help" | "-h" => {
@@ -2153,6 +2165,22 @@ async fn run_mcp_test(server: &str, only_tool: Option<&str>, json: bool) -> i32 
     exit
 }
 
+/// Parses `--time-cap-multiplier`, exiting with the usage code on anything
+/// that isn't a finite positive number. Rejecting `0` and negatives here (as
+/// opposed to silently ignoring them) matters: a zero cap would time every
+/// task out instantly and read as a total score collapse.
+fn parse_time_cap_multiplier(raw: &str) -> f64 {
+    match raw.parse::<f64>() {
+        Ok(n) if n.is_finite() && n > 0.0 => n,
+        _ => {
+            eprintln!(
+                "cubi: bench --time-cap-multiplier must be a positive number (e.g. 3 or 2.5)."
+            );
+            std::process::exit(2);
+        }
+    }
+}
+
 fn print_bench_help() {
     println!(
         "cubi bench — run the curated regression suite\n\n\
@@ -2167,6 +2195,7 @@ fn print_bench_help() {
          --tasks-root <dir>        Override the tasks directory\n  \
                                   (default: bench/tasks/).\n  \
          --step-cap <n>            Override the per-task step cap.\n  \
+         --time-cap-multiplier <n> Scale every task's time cap by <n> (slow CPU hosts).\n  \
          --keep-workdir            Don't clean up the agent's tempdir.\n  \
          --json                    Print summary as JSON to stdout.\n  \
          -h, --help                Print this help and exit.\n\n\

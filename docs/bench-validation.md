@@ -86,6 +86,41 @@ not the old harness-level rc 2.
 harness even in principle. `tests/bench.rs` now guards all three defects with
 a model-free pass/fail pair that runs in ordinary CI.
 
+### Result 3 — CI was also losing on wall-clock, independently
+
+The nightly job does run (64 scheduled runs, one per night, none skipped), but
+inspecting its history showed a second, independent failure mode: **every task
+hit its time cap**, on every run examined.
+
+```
+"status": "timeout", "elapsed_seconds": 120.002,
+"error": "exceeded time_cap_seconds = 120"
+```
+
+The tell is the step duration — the bench step took *exactly* 13:00 in both
+the oldest available run and the most recent, which is precisely the sum of
+the six caps (5×120s + 180s). The green check on those runs is an artifact of
+`continue-on-error: true` on the bench step.
+
+The `ubuntu-latest` runner is CPU-only (4 vCPU, no GPU), which is far slower
+than the caps in `task.toml` assume. Note the two failure modes compound: with
+writes being denied (Result 2), the agent would retry a denied tool up to its
+step budget, burning the clock — so how much of the timeout was slowness
+versus denial-looping is not separable from the old artifacts, because
+`steps_used` and `tokens_in` are `null` in all of them (Result 2, defect 3
+discarded the event log).
+
+Changes made:
+
+- **`--time-cap-multiplier <n>`** on `cubi bench`, scaling every task's cap
+  while preserving relative budgets. Task definitions keep stating caps that
+  reflect intent; slow hosts scale up instead of editing them.
+- The nightly now runs **`qwen3.5:4b`** with **`--time-cap-multiplier 3`**
+  (caps 360s/540s), and prints the score table to the job summary so a
+  flat-zero night is visible without downloading an artifact. It intentionally
+  benchmarks a *smaller* model than the shipped default: the job exists to
+  catch agent-loop regressions, which requires runs that finish.
+
 ## Outstanding
 
 **Live-model scores were not produced** — blocked on model weights, not on the

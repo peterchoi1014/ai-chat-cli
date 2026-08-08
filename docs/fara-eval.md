@@ -100,7 +100,8 @@ weight class, 256K native context (up from 32K), with improved native
 tool-calling. See `src/main.rs` (`DEFAULT_MODEL`), the context-window registry
 in `src/llm.rs`, and the updated onboarding/help/README/INSTALL copy. The
 `qwen3.5:4b` variant is the small-machine fallback. The nightly `cubi bench`
-regression baseline stays pinned to `qwen3:8b` in CI on purpose.
+job deliberately runs a *smaller* model than the default (`qwen3.5:4b`) because
+its runner is CPU-only; see [`bench-validation.md`](bench-validation.md).
 
 If the **"browser computer-use as a Cubi feature"** path is ever revived, Fara
 becomes relevant again: scope the multimodal + browser-action-layer work above

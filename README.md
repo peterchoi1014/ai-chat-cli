@@ -73,7 +73,7 @@ local server), a streaming native-tool-calling agent loop, and MCP support.
   audit log of every tool call and lifecycle event; optional Ed25519 signing
   via `cubi keys init`. Verify with `cubi verify-receipts`.
 - 🏁 **Benchmark suite** — `cubi bench --suite quick` runs Cubi's curated
-  regression suite against any local model. Nightly CI tracks `qwen3:8b`
+  regression suite against any local model. Nightly CI tracks `qwen3.5:4b`
   scores; see [`bench/README.md`](bench/README.md).
 - 🧪 **SWE-bench-Lite** — `cubi swebench --dataset <file>` drives Cubi over
   the real SWE-bench-Lite issues, emitting official-schema predictions plus

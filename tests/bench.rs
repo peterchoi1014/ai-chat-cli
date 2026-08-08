@@ -58,6 +58,12 @@ fn bench_rejects_unknown_flag() {
 ///
 /// A scripted `edit_file` applies the real one-token fix for
 /// `rust-typo-fix`, so a healthy harness must score it 100%.
+///
+/// Unix-only: `verify.sh` is POSIX sh (see `bench/README.md`) and shells out
+/// to `cargo` through it. On Windows that lookup fails with 127, scoring the
+/// task `fail` for a reason unrelated to what this test asserts — and Cubi's
+/// bench suite targets macOS/Linux, so gate it rather than pretend otherwise.
+#[cfg(not(windows))]
 #[test]
 fn bench_scores_a_pass_when_the_agent_fixes_the_task() {
     Command::cargo_bin("cubi")
@@ -86,6 +92,11 @@ fn bench_scores_a_pass_when_the_agent_fixes_the_task() {
 /// must still score 0%, and the recorded `verify_exit_code` must be the real
 /// `cargo test` failure (101) rather than a harness-level path error. Without
 /// this, a harness that scored everything as a pass would look "fixed".
+///
+/// Unix-only for the same reason as the test above: on Windows the task fails
+/// with 127 (no `cargo` under POSIX sh), which would satisfy the "fail"
+/// assertion for the wrong reason and assert nothing about the harness.
+#[cfg(not(windows))]
 #[test]
 fn bench_scores_a_fail_when_the_agent_does_not_fix_the_task() {
     Command::cargo_bin("cubi")
