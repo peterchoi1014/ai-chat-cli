@@ -94,6 +94,29 @@ pub struct BenchArgs {
     pub json: bool,
     /// Override `bench/tasks/` root (defaults to `<cwd>/bench/tasks`).
     pub tasks_root: Option<PathBuf>,
+    /// Scales every task's `time_cap_seconds` by this factor. Task
+    /// definitions state caps that suit GPU-class inference; CPU-only hosts
+    /// (notably GitHub-hosted CI runners) need several times longer for the
+    /// same work, and without headroom every task merely times out. Scaling
+    /// keeps the relative per-task budgets intact rather than flattening
+    /// them to one number.
+    pub time_cap_multiplier: Option<f64>,
+}
+
+/// Applies `multiplier` to a task's configured cap, rounding up so a
+/// fractional scale never shortens a budget. Falls back to the unscaled cap
+/// when the multiplier is absent or not a usable positive number, and never
+/// returns 0 (a zero cap would time every task out instantly).
+fn scaled_time_cap(base_seconds: u64, multiplier: Option<f64>) -> u64 {
+    let Some(m) = multiplier.filter(|m| m.is_finite() && *m > 0.0) else {
+        return base_seconds;
+    };
+    let scaled = (base_seconds as f64 * m).ceil();
+    // Saturate rather than wrap on an absurd multiplier.
+    if scaled >= u64::MAX as f64 {
+        return u64::MAX;
+    }
+    (scaled as u64).max(1)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -129,6 +152,7 @@ impl Default for BenchArgs {
             keep_workdir: false,
             json: false,
             tasks_root: None,
+            time_cap_multiplier: None,
         }
     }
 }
@@ -402,6 +426,7 @@ pub async fn run(args: BenchArgs) -> Result<i32> {
             args.step_cap,
             args.keep_workdir,
             args.json,
+            args.time_cap_multiplier,
         )
         .await;
         let result = match result {
@@ -478,6 +503,7 @@ async fn run_one_task(
     step_cap_override: Option<u32>,
     keep_workdir: bool,
     quiet_stdout: bool,
+    time_cap_multiplier: Option<f64>,
 ) -> Result<TaskResult> {
     let src_repo = tasks_root.join(&task.id).join("repo");
     let verify_script = tasks_root.join(&task.id).join("verify.sh");
@@ -565,7 +591,8 @@ async fn run_one_task(
         .spawn()
         .with_context(|| format!("spawn cubi for task {}", task.id))?;
 
-    let timeout = Duration::from_secs(task.time_cap_seconds);
+    let time_cap_seconds = scaled_time_cap(task.time_cap_seconds, time_cap_multiplier);
+    let timeout = Duration::from_secs(time_cap_seconds);
     let cubi_exit_code: Option<i32>;
     let status: Option<TaskStatus>;
     match tokio::time::timeout(timeout, child.wait()).await {
@@ -605,10 +632,9 @@ async fn run_one_task(
                 tokens_in: None,
                 tokens_out: None,
                 events_path: Some(events_path.display().to_string()),
-                error: Some(format!(
-                    "exceeded time_cap_seconds = {}",
-                    task.time_cap_seconds
-                )),
+                // Report the cap actually enforced, not the unscaled one from
+                // task.toml, so a scaled CI run isn't misleading.
+                error: Some(format!("exceeded time_cap_seconds = {}", time_cap_seconds)),
             });
         }
     }
@@ -802,5 +828,34 @@ mod tests {
         // 1700000000 = 2023-11-14T22:13:20 UTC
         let (y, mo, d, h, mi, s) = unix_to_ymdhms(1_700_000_000);
         assert_eq!((y, mo, d, h, mi, s), (2023, 11, 14, 22, 13, 20));
+    }
+
+    #[test]
+    fn scaled_time_cap_applies_multiplier() {
+        assert_eq!(scaled_time_cap(120, Some(3.0)), 360);
+        assert_eq!(scaled_time_cap(180, Some(3.0)), 540);
+        // Rounds up so a fractional scale never shortens the budget.
+        assert_eq!(scaled_time_cap(120, Some(2.5)), 300);
+        assert_eq!(scaled_time_cap(121, Some(1.5)), 182);
+    }
+
+    #[test]
+    fn scaled_time_cap_passes_through_without_multiplier() {
+        assert_eq!(scaled_time_cap(120, None), 120);
+        assert_eq!(scaled_time_cap(120, Some(1.0)), 120);
+    }
+
+    #[test]
+    fn scaled_time_cap_ignores_unusable_multipliers() {
+        // A zero/negative/NaN scale must not collapse the cap to 0, which
+        // would time every task out instantly.
+        for bad in [0.0, -2.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(scaled_time_cap(120, Some(bad)), 120, "bad = {bad}");
+        }
+    }
+
+    #[test]
+    fn scaled_time_cap_saturates_instead_of_wrapping() {
+        assert_eq!(scaled_time_cap(u64::MAX, Some(2.0)), u64::MAX);
     }
 }

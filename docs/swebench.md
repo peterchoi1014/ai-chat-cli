@@ -143,7 +143,7 @@ cubi swebench --dataset swe-bench-lite.jsonl --limit 10 --json
 | Flag | Meaning |
 | --- | --- |
 | `--dataset <path.jsonl>` | Instances, one JSON per line. **Required.** |
-| `--model <name>` | Model to drive (default `$CUBI_MODEL` or `qwen3:8b`). |
+| `--model <name>` | Model to drive (default `$CUBI_MODEL` or `qwen3.5:9b`). |
 | `--instance <id>` | Run a single instance by id. |
 | `--limit <n>` | Cap the number of instances. |
 | `--repos-root <dir>` | Directory of pre-cloned repos (offline); otherwise clone from GitHub. |
