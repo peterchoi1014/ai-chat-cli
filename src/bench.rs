@@ -607,32 +607,42 @@ async fn run_one_task(
             status = Some(TaskStatus::Error);
             // best-effort cleanup
             let _ = child.kill().await;
+            // Same reasoning as the timeout arm below: salvage whatever
+            // progress the partial event log records.
+            let (steps_used, tokens_in, tokens_out) = parse_events_metrics(&events_path);
             return Ok(TaskResult {
                 task_id: task.id.clone(),
                 model: model.to_string(),
                 status: status.unwrap(),
                 elapsed_seconds: start.elapsed().as_secs_f64(),
-                steps_used: None,
+                steps_used,
                 verify_exit_code: None,
                 cubi_exit_code,
-                tokens_in: None,
-                tokens_out: None,
+                tokens_in,
+                tokens_out,
                 events_path: Some(events_path.display().to_string()),
                 error: Some(format!("wait error: {e}")),
             });
         }
         Err(_) => {
             let _ = child.kill().await;
+            // Parse whatever the agent managed to write before the cap. A
+            // timeout that reports `steps_used: null` is indistinguishable
+            // between "never got started" and "was one step from done", which
+            // is precisely the number needed to size `--time-cap-multiplier`.
+            // The event log is appended per event, so the partial file left by
+            // the killed child is still valid JSONL up to the last whole line.
+            let (steps_used, tokens_in, tokens_out) = parse_events_metrics(&events_path);
             return Ok(TaskResult {
                 task_id: task.id.clone(),
                 model: model.to_string(),
                 status: TaskStatus::Timeout,
                 elapsed_seconds: start.elapsed().as_secs_f64(),
-                steps_used: None,
+                steps_used,
                 verify_exit_code: None,
                 cubi_exit_code: None,
-                tokens_in: None,
-                tokens_out: None,
+                tokens_in,
+                tokens_out,
                 events_path: Some(events_path.display().to_string()),
                 // Report the cap actually enforced, not the unscaled one from
                 // task.toml, so a scaled CI run isn't misleading.
@@ -696,6 +706,19 @@ async fn run_one_task(
 /// a few coarse-grained metrics. Returns `(steps, tokens_in, tokens_out)`.
 /// All are best-effort: if the file is missing or fields aren't present,
 /// the corresponding entries come back as `None`.
+/// Event names and payload shape must match what the agent actually writes to
+/// the `--events` sink (`src/cli/agent.rs`): `turn_start`, `tool_call_start`,
+/// `tool_call_complete`, `turn_end`, with per-turn token counts nested under
+/// `usage`. An earlier version of this function matched `tool_call` / `turn`
+/// and read *top-level* `prompt_tokens`, none of which are ever emitted — so it
+/// silently reported `steps_used: null` and zero tokens for every task,
+/// including passing ones. The tests below pin the real schema; don't relax
+/// them without checking the emitter.
+///
+/// `steps` counts `tool_call_start` events (tool invocations attempted). A run
+/// that produced recognizable events but called no tools yields `Some(0)`
+/// rather than `None`, since "started but never called a tool" is a materially
+/// different signal from "no event log at all".
 fn parse_events_metrics(path: &Path) -> (Option<u32>, Option<u64>, Option<u64>) {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return (None, None, None);
@@ -704,28 +727,34 @@ fn parse_events_metrics(path: &Path) -> (Option<u32>, Option<u64>, Option<u64>) 
     let mut tokens_in: u64 = 0;
     let mut tokens_out: u64 = 0;
     let mut saw_tokens = false;
-    let mut saw_step = false;
+    let mut saw_activity = false;
     for line in raw.lines() {
+        // A partial trailing line (the child was killed mid-write on a
+        // timeout) simply fails to parse and is skipped.
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        if let Some(t) = v.get("type").and_then(|t| t.as_str()) {
-            if matches!(t, "tool_call" | "tool_start" | "turn") {
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("tool_call_start") => {
                 steps = steps.saturating_add(1);
-                saw_step = true;
+                saw_activity = true;
             }
+            Some("turn_start" | "tool_call_complete" | "turn_end") => saw_activity = true,
+            _ => {}
         }
-        if let Some(n) = v.get("prompt_tokens").and_then(|n| n.as_u64()) {
-            tokens_in = tokens_in.saturating_add(n);
-            saw_tokens = true;
-        }
-        if let Some(n) = v.get("completion_tokens").and_then(|n| n.as_u64()) {
-            tokens_out = tokens_out.saturating_add(n);
-            saw_tokens = true;
+        if let Some(usage) = v.get("usage") {
+            if let Some(n) = usage.get("prompt_tokens").and_then(|n| n.as_u64()) {
+                tokens_in = tokens_in.saturating_add(n);
+                saw_tokens = true;
+            }
+            if let Some(n) = usage.get("completion_tokens").and_then(|n| n.as_u64()) {
+                tokens_out = tokens_out.saturating_add(n);
+                saw_tokens = true;
+            }
         }
     }
     (
-        if saw_step { Some(steps) } else { None },
+        if saw_activity { Some(steps) } else { None },
         if saw_tokens { Some(tokens_in) } else { None },
         if saw_tokens { Some(tokens_out) } else { None },
     )
@@ -861,5 +890,74 @@ mod tests {
     #[test]
     fn scaled_time_cap_saturates_instead_of_wrapping() {
         assert_eq!(scaled_time_cap(u64::MAX, Some(2.0)), u64::MAX);
+    }
+
+    /// Event lines copied from what `src/cli/agent.rs` actually emits to the
+    /// `--events` sink. If the emitter's names or payload shape change, this
+    /// test is the tripwire.
+    const REAL_EVENTS: &str = concat!(
+        r#"{"model":"m","ts":"t","turn":1,"type":"turn_start"}"#,
+        "\n",
+        r#"{"args":{"path":"src/lib.rs"},"tool":"edit_file","ts":"t","type":"tool_call_start"}"#,
+        "\n",
+        r#"{"ok":true,"result_chars":9,"tool":"edit_file","ts":"t","type":"tool_call_complete"}"#,
+        "\n",
+        r#"{"model":"m","ts":"t","type":"turn_end","usage":{"completion_tokens":34,"elapsed_ms":5,"prompt_tokens":12}}"#,
+        "\n",
+    );
+
+    fn write_events(contents: &str) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().expect("tempfile");
+        f.write_all(contents.as_bytes()).expect("write events");
+        f.flush().expect("flush events");
+        f
+    }
+
+    #[test]
+    fn parse_events_metrics_reads_real_event_schema() {
+        let f = write_events(REAL_EVENTS);
+        let (steps, tin, tout) = parse_events_metrics(f.path());
+        assert_eq!(steps, Some(1), "one tool_call_start");
+        assert_eq!(tin, Some(12), "prompt_tokens live under `usage`");
+        assert_eq!(tout, Some(34), "completion_tokens live under `usage`");
+    }
+
+    #[test]
+    fn parse_events_metrics_skips_truncated_trailing_line() {
+        // A timeout kills the child mid-write, leaving a partial last line.
+        let truncated = format!("{REAL_EVENTS}{{\"type\":\"tool_call_st");
+        let f = write_events(&truncated);
+        let (steps, tin, _) = parse_events_metrics(f.path());
+        assert_eq!(steps, Some(1), "partial line must be ignored, not counted");
+        assert_eq!(tin, Some(12));
+    }
+
+    #[test]
+    fn parse_events_metrics_reports_zero_steps_when_no_tool_was_called() {
+        // Distinguishable from "no event log": the agent ran but called nothing.
+        let f = write_events(concat!(
+            r#"{"turn":1,"type":"turn_start"}"#,
+            "\n",
+            r#"{"type":"turn_end","usage":{"prompt_tokens":7,"completion_tokens":1}}"#,
+            "\n",
+        ));
+        let (steps, tin, tout) = parse_events_metrics(f.path());
+        assert_eq!(steps, Some(0));
+        assert_eq!((tin, tout), (Some(7), Some(1)));
+    }
+
+    #[test]
+    fn parse_events_metrics_returns_none_for_missing_file() {
+        let (steps, tin, tout) = parse_events_metrics(Path::new("/nonexistent/events.jsonl"));
+        assert_eq!((steps, tin, tout), (None, None, None));
+    }
+
+    #[test]
+    fn parse_events_metrics_sums_tokens_across_turns() {
+        let two_turns = format!("{REAL_EVENTS}{REAL_EVENTS}");
+        let (steps, tin, tout) = parse_events_metrics(write_events(&two_turns).path());
+        assert_eq!(steps, Some(2));
+        assert_eq!((tin, tout), (Some(24), Some(68)));
     }
 }
