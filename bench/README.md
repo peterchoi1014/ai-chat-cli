@@ -88,6 +88,13 @@ If a run comes back all-`timeout` with `elapsed_seconds` sitting exactly on
 the cap, that is the signal to raise the multiplier (or use a smaller model),
 not evidence about the model's ability.
 
+To size the multiplier rather than guess it, read `steps_used` on the timed-out
+tasks: it counts the tool calls the agent got through before the cap, parsed
+from the partial event log. `0` means it never reached a first tool call (the
+cap is far too small, or the model is not emitting tool calls at all); a
+number close to what the task needs means a modest bump will do. `null` means
+no event log was produced at all.
+
 Results land in `bench/results/<unix-ts>/`. The `summary.json` schema is
 stable; CI consumes it as an artifact.
 

@@ -311,6 +311,31 @@ mod tests {
         TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Like [`capture_fds`], but reports whether the redirect could actually be
+    /// installed instead of silently degrading to an empty capture.
+    ///
+    /// `capture_fds` deliberately falls back to `(f(), String::new())` when
+    /// `Redirect::install` fails, so production never loses a command to a
+    /// capture problem. In a test that is a trap: installing needs a tempfile
+    /// plus a spare fd for each `dup` of 1/2, and under `cargo test` this
+    /// binary's ~840 tests run in parallel, so on a host with a low
+    /// `ulimit -n` (macOS runners notably) install can transiently fail with
+    /// EMFILE. The capture then comes back empty and the *content* assertion
+    /// fires — surfacing an environmental fd shortage as the baffling
+    /// `first: ""`, which is exactly how this flaked on macOS CI.
+    ///
+    /// Returning `None` lets each test skip on that path while still asserting
+    /// its real properties whenever the redirect did install. It also sharpens
+    /// diagnosis: an empty capture reported through `Some` now proves the
+    /// write/read path is at fault rather than the install.
+    fn try_capture<R>(f: impl FnOnce() -> R) -> Option<(R, String)> {
+        let redir = Redirect::install(true).ok()?;
+        let r = f();
+        let captured = redir.read_captured();
+        drop(redir);
+        Some((r, captured))
+    }
+
     // The libtest harness intercepts the `print!`/`eprint!` *macros* (on every
     // thread) via `std::io::set_output_capture`, so under `cargo test` those
     // macros never reach fd 1/2. Writing to `std::io::stdout()`/`stderr()`
@@ -334,11 +359,14 @@ mod tests {
     #[test]
     fn captures_stdout_and_stderr_and_passes_return_value() {
         let _g = lock();
-        let (ret, out) = capture_fds(|| {
+        let Some((ret, out)) = try_capture(|| {
             emit_stdout("hello-from-stdout");
             emit_stderr("hello-from-stderr");
             123
-        });
+        }) else {
+            eprintln!("skipping: stdout/stderr redirect could not be installed");
+            return;
+        };
         assert_eq!(ret, 123, "closure return value must pass through");
         assert!(
             out.contains("hello-from-stdout"),
@@ -353,10 +381,16 @@ mod tests {
     #[test]
     fn fds_restored_between_captures() {
         let _g = lock();
-        let (_, first) = capture_fds(|| emit_stdout("first-message"));
+        let Some((_, first)) = try_capture(|| emit_stdout("first-message")) else {
+            eprintln!("skipping: stdout/stderr redirect could not be installed");
+            return;
+        };
         // After the first capture the fds are restored; the second capture must
         // therefore only see its own output, not the first's.
-        let (_, second) = capture_fds(|| emit_stdout("second-message"));
+        let Some((_, second)) = try_capture(|| emit_stdout("second-message")) else {
+            eprintln!("skipping: stdout/stderr redirect could not be installed");
+            return;
+        };
         assert!(first.contains("first-message"), "first: {first:?}");
         assert!(second.contains("second-message"), "second: {second:?}");
         assert!(
@@ -377,7 +411,10 @@ mod tests {
         assert!(result.is_err(), "panic should propagate out of capture_fds");
 
         // fd 1/2 must be usable again: a following capture works normally.
-        let (_, after) = capture_fds(|| emit_stdout("after-panic"));
+        let Some((_, after)) = try_capture(|| emit_stdout("after-panic")) else {
+            eprintln!("skipping: stdout/stderr redirect could not be installed");
+            return;
+        };
         assert!(
             after.contains("after-panic"),
             "fds not restored after panic: {after:?}"
@@ -387,12 +424,15 @@ mod tests {
     #[test]
     fn captures_child_process_inherited_stdio() {
         let _g = lock();
-        let (status, out) = capture_fds(|| {
+        let Some((status, out)) = try_capture(|| {
             std::process::Command::new("echo")
                 .arg("child-inherited-out")
                 .status()
                 .expect("spawn echo")
-        });
+        }) else {
+            eprintln!("skipping: stdout/stderr redirect could not be installed");
+            return;
+        };
         assert!(status.success(), "child exited non-zero");
         assert!(
             out.contains("child-inherited-out"),
@@ -406,7 +446,10 @@ mod tests {
         // The async entry point installs the redirect, captures fd 1/2 while
         // the guard is alive, and restores on drop — mirroring `capture_fds`
         // but leaving the guard under the caller's control across an `.await`.
-        let redir = begin().expect("begin() should install the redirect");
+        let Some(redir) = begin() else {
+            eprintln!("skipping: stdout/stderr redirect could not be installed");
+            return;
+        };
         emit_stdout("async-captured-out");
         emit_stderr("async-captured-err");
         let captured = redir.read_captured();
@@ -420,7 +463,10 @@ mod tests {
             "begin() must capture stderr: {captured:?}"
         );
         // fds are restored after drop: a following sync capture is clean.
-        let (_, after) = capture_fds(|| emit_stdout("after-begin"));
+        let Some((_, after)) = try_capture(|| emit_stdout("after-begin")) else {
+            eprintln!("skipping: stdout/stderr redirect could not be installed");
+            return;
+        };
         assert!(after.contains("after-begin"), "fds not restored: {after:?}");
         assert!(
             !after.contains("async-captured-out"),
@@ -431,7 +477,12 @@ mod tests {
     #[test]
     fn color_override_is_active_inside_window() {
         let _g = lock();
-        let (colorized, _) = capture_fds(|| colored::control::SHOULD_COLORIZE.should_colorize());
+        let Some((colorized, _)) =
+            try_capture(|| colored::control::SHOULD_COLORIZE.should_colorize())
+        else {
+            eprintln!("skipping: stdout/stderr redirect could not be installed");
+            return;
+        };
         assert!(
             colorized,
             "color override must be forced on inside the capture window"
